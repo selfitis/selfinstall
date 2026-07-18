@@ -1,0 +1,2 @@
+# selfinstall
+double package manager
