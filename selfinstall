@@ -1,0 +1,103 @@
+#!/bin/bash
+
+DISTRO=$1
+ISLEM=$2
+PAKET=$3
+
+DEBIAN_DIR="/debian-koku"
+
+yardim() {
+    echo "Usage:"
+    echo "  selfinstall debian -S <paket>      -> Installs a Debian package into the folder."
+    echo "  selfinstall debian -R <paket>      -> Deletes the package and its remnants from the folder."
+    echo "  selfinstall debian --open <komut>  -> Runs the program inside the folder."
+    echo "  selfinstall debian --link <komut>  -> Creates a desktop/menu shortcut for the program."
+    exit 1
+}
+
+if [ "$DISTRO" != "debian" ]; then
+    echo "For now, this module only supports the 'debian' folder structure."
+    yardim
+fi
+
+mount_sistem() {
+    mountpoint -q $DEBIAN_DIR/proc || sudo mount -t proc proc $DEBIAN_DIR/proc
+    mountpoint -q $DEBIAN_DIR/sys || sudo mount --bind /sys $DEBIAN_DIR/sys
+    mountpoint -q $DEBIAN_DIR/dev || sudo mount --bind /dev $DEBIAN_DIR/dev
+    mountpoint -q $DEBIAN_DIR/tmp || sudo mount --bind /tmp $DEBIAN_DIR/tmp
+    mountpoint -q $DEBIAN_DIR/tmp/.X11-unix || sudo mount --bind /tmp/.X11-unix $DEBIAN_DIR/tmp/.X11-unix
+    
+    if [ -n "$XDG_RUNTIME_DIR" ]; then
+        sudo mkdir -p "$DEBIAN_DIR/$XDG_RUNTIME_DIR"
+        mountpoint -q "$DEBIAN_DIR/$XDG_RUNTIME_DIR" || sudo mount --bind "$XDG_RUNTIME_DIR" "$DEBIAN_DIR/$XDG_RUNTIME_DIR"
+    fi
+
+    sudo cp /etc/resolv.conf $DEBIAN_DIR/etc/resolv.conf
+}
+
+case $ISLEM in
+    -S)
+        if [ "$DISTRO" == "debian" ]; then
+            mount_sistem
+            echo "$PAKET is installing in Debian folder..."
+            sudo chroot $TARGET_DIR apt-get update
+            sudo chroot $TARGET_DIR apt-get install -y "$PAKET"
+        else
+            # Zaten Arch'tayız, klasörle uğraşma, direkt ana sisteme kur!
+            echo "$PAKET is installing on main Arch system..."
+            sudo pacman -S --noconfirm "$PAKET"
+        fi
+        ;;
+        
+    -R)
+        if [ "$DISTRO" == "debian" ]; then
+            mount_sistem
+            echo "$PAKET is removing from Debian folder..."
+            sudo chroot $TARGET_DIR apt-get purge -y "$PAKET"
+            sudo chroot $TARGET_DIR apt-get autoremove -y
+        else
+            # Direkt ana sistemden sil!
+            echo " $PAKET  is removed from main Arch system..."
+            sudo pacman -Rns --noconfirm "$PAKET"
+        fi
+        ;;        
+
+    --open)
+        mount_sistem
+        sudo chroot $DEBIAN_DIR env \
+            DISPLAY=$DISPLAY \
+            WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
+            XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR \
+            QT_QPA_PLATFORM=wayland \
+            GDK_BACKEND=wayland,x11 \
+            "$PAKET"
+        ;;
+        
+    --link)
+        if [ -z "$PAKET" ]; then
+            echo "Please specify the package name for which the shortcut will be created.."
+            exit 1
+        fi
+        
+        KISAYOL_YOLU="$HOME/.local/share/applications/selfinstall-$PAKET.desktop"
+        mkdir -p "$HOME/.local/share/applications"
+        
+        # Masaüstü menüsü için .desktop dosyası üretiyoruz
+        cat <<EOF > "$KISAYOL_YOLU"
+[Desktop Entry]
+Name=$PAKET (Debian)
+Exec=selfinstall debian --open $PAKET
+Terminal=false
+Type=Application
+Icon=system-run
+Categories=Utility;
+EOF
+        chmod +x "$KISAYOL_YOLU"
+        echo "🔥 Perfect! '$PAKET' menu shortcut created "
+        echo "You can now open it by clicking directly on the Garuda menu.."
+        ;;
+        
+    *)
+        yardim
+        ;;
+esac
