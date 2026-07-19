@@ -4,99 +4,113 @@ DISTRO=$1
 ISLEM=$2
 PAKET=$3
 
-DEBIAN_DIR="/debian-koku"
+# Get the host system user to mirror inside chroot
+REAL_USER=${SUDO_USER:-$USER}
+if [ "$REAL_USER" == "root" ]; then
+    REAL_USER=$(logname 2>/dev/null || echo $USER)
+fi
+
+TARGET_DIR="/debian-koku"
+CHROOT_ENV="env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 yardim() {
-    echo "Usage:"
-    echo "  selfinstall debian -S <paket>      -> Installs a Debian package into the folder."
-    echo "  selfinstall debian -R <paket>      -> Deletes the package and its remnants from the folder."
-    echo "  selfinstall debian --open <komut>  -> Runs the program inside the folder."
-    echo "  selfinstall debian --link <komut>  -> Creates a desktop/menu shortcut for the program."
+    echo "Usage: selfinstall <arch|debian> <command> <package>"
+    echo "Commands:"
+    echo "  -S        -> Install package"
+    echo "  -R        -> Remove package"
+    echo "  --open    -> Run package/command"
+    echo "  --link    -> Create menu shortcut"
     exit 1
 }
 
-if [ "$DISTRO" != "debian" ]; then
-    echo "For now, this module only supports the 'debian' folder structure."
-    yardim
-fi
+if [ -z "$ISLEM" ]; then yardim; fi
 
 mount_sistem() {
-    mountpoint -q $DEBIAN_DIR/proc || sudo mount -t proc proc $DEBIAN_DIR/proc
-    mountpoint -q $DEBIAN_DIR/sys || sudo mount --bind /sys $DEBIAN_DIR/sys
-    mountpoint -q $DEBIAN_DIR/dev || sudo mount --bind /dev $DEBIAN_DIR/dev
-    mountpoint -q $DEBIAN_DIR/tmp || sudo mount --bind /tmp $DEBIAN_DIR/tmp
-    mountpoint -q $DEBIAN_DIR/tmp/.X11-unix || sudo mount --bind /tmp/.X11-unix $DEBIAN_DIR/tmp/.X11-unix
-    
-    if [ -n "$XDG_RUNTIME_DIR" ]; then
-        sudo mkdir -p "$DEBIAN_DIR/$XDG_RUNTIME_DIR"
-        mountpoint -q "$DEBIAN_DIR/$XDG_RUNTIME_DIR" || sudo mount --bind "$XDG_RUNTIME_DIR" "$DEBIAN_DIR/$XDG_RUNTIME_DIR"
+    if [ "$DISTRO" == "debian" ] && [ -d "$TARGET_DIR" ]; then
+        # Essential system mounts
+        mountpoint -q $TARGET_DIR/proc || sudo mount -t proc proc $TARGET_DIR/proc
+        mountpoint -q $TARGET_DIR/sys  || sudo mount --bind /sys $TARGET_DIR/sys
+        mountpoint -q $TARGET_DIR/dev  || sudo mount --bind /dev $TARGET_DIR/dev
+
+        # GPU/Render Mount (GUI hızlandırma ve ekran erişimi için şart)
+        if [ -d "/dev/dri" ]; then
+            sudo mkdir -p $TARGET_DIR/dev/dri
+            mountpoint -q $TARGET_DIR/dev/dri || sudo mount --bind /dev/dri $TARGET_DIR/dev/dri
+        fi
+
+        # Display/GUI mounts
+        mountpoint -q $TARGET_DIR/tmp  || sudo mount --bind /tmp $TARGET_DIR/tmp
+        mountpoint -q $TARGET_DIR/tmp/.X11-unix || sudo mount --bind /tmp/.X11-unix $TARGET_DIR/tmp/.X11-unix
+
+        # Güvenli Xauthority kopyalama (Mevcut aktif Xauth dosyasını bulur)
+        XAUTH_PATH="${XAUTHORITY:-$HOME/.Xauthority}"
+        if [ -f "$XAUTH_PATH" ]; then
+            sudo cp "$XAUTH_PATH" "$TARGET_DIR/home/$REAL_USER/.Xauthority"
+            sudo chown $REAL_USER:$REAL_USER "$TARGET_DIR/home/$REAL_USER/.Xauthority"
+        fi
+
+        # Network fix
+        sudo cp /etc/resolv.conf $TARGET_DIR/etc/resolv.conf 2>/dev/null
     fi
-
-    sudo cp /etc/resolv.conf $DEBIAN_DIR/etc/resolv.conf
 }
-
 case $ISLEM in
     -S)
         if [ "$DISTRO" == "debian" ]; then
             mount_sistem
-            echo "$PAKET is installing in Debian folder..."
-            sudo chroot $TARGET_DIR apt-get update
-            sudo chroot $TARGET_DIR apt-get install -y "$PAKET"
+            echo "Installing $PAKET in Debian..."
+            sudo chroot "$TARGET_DIR" $CHROOT_ENV apt-get update
+            sudo chroot "$TARGET_DIR" $CHROOT_ENV apt-get install -y "$PAKET"
         else
-            # Zaten Arch'tayız, klasörle uğraşma, direkt ana sisteme kur!
-            echo "$PAKET is installing on main Arch system..."
+            echo "Installing $PAKET in Arch..."
             sudo pacman -S --noconfirm "$PAKET"
         fi
         ;;
-        
+
     -R)
         if [ "$DISTRO" == "debian" ]; then
             mount_sistem
-            echo "$PAKET is removing from Debian folder..."
-            sudo chroot $TARGET_DIR apt-get purge -y "$PAKET"
-            sudo chroot $TARGET_DIR apt-get autoremove -y
+            echo "Removing $PAKET from Debian..."
+            sudo chroot "$TARGET_DIR" $CHROOT_ENV apt-get purge -y "$PAKET"
+            sudo chroot "$TARGET_DIR" $CHROOT_ENV apt-get autoremove -y
         else
-            # Direkt ana sistemden sil!
-            echo " $PAKET  is removed from main Arch system..."
+            echo "Removing $PAKET from Arch..."
             sudo pacman -Rns --noconfirm "$PAKET"
         fi
-        ;;        
 
-    --open)
-        mount_sistem
-        sudo chroot $DEBIAN_DIR env \
-            DISPLAY=$DISPLAY \
-            WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
-            XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR \
-            QT_QPA_PLATFORM=wayland \
-            GDK_BACKEND=wayland,x11 \
-            "$PAKET"
+        rm -f "$HOME/.local/share/applications/selfinstall-$DISTRO-$PAKET.desktop"
         ;;
-        
-    --link)
-        if [ -z "$PAKET" ]; then
-            echo "Please specify the package name for which the shortcut will be created.."
-            exit 1
+    --open)
+        if [ "$DISTRO" == "debian" ]; then
+            mount_sistem
+            echo "Launching $PAKET from Debian as user '$REAL_USER'..."
+
+            # Ana sistem kullanıcısı olarak X11 erişimine izin ver
+            sudo -u "$REAL_USER" xhost +local: > /dev/null 2>&1
+
+            sudo chroot "$TARGET_DIR" $CHROOT_ENV su - "$REAL_USER" -c "env DISPLAY=$DISPLAY WAYLAND_DISPLAY=$WAYLAND_DISPLAY XAUTHORITY=/home/$REAL_USER/.Xauthority LANG=c.UTF-8 LC_ALL=c.UTF-8 $PAKET"
+        else
+            "$PAKET"
         fi
-        
-        KISAYOL_YOLU="$HOME/.local/share/applications/selfinstall-$PAKET.desktop"
+        ;;
+
+    --link)
+        if [ -z "$PAKET" ]; then yardim; fi
+        KISAYOL_YOLU="$HOME/.local/share/applications/selfinstall-$DISTRO-$PAKET.desktop"
         mkdir -p "$HOME/.local/share/applications"
-        
-        # Masaüstü menüsü için .desktop dosyası üretiyoruz
+
         cat <<EOF > "$KISAYOL_YOLU"
 [Desktop Entry]
-Name=$PAKET (Debian)
-Exec=selfinstall debian --open $PAKET
+Name=$PAKET ($DISTRO)
+Exec=selfinstall $DISTRO --open $PAKET
 Terminal=false
 Type=Application
 Icon=system-run
 Categories=Utility;
 EOF
         chmod +x "$KISAYOL_YOLU"
-        echo "🔥 Perfect! '$PAKET' menu shortcut created "
-        echo "You can now open it by clicking directly on the Garuda menu.."
+        echo "Shortcut created for '$PAKET'."
         ;;
-        
+
     *)
         yardim
         ;;
