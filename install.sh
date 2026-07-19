@@ -1,65 +1,56 @@
 #!/bin/bash
-
-# Renklendirme için
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
-NC='\033[0m' # Renksiz
+NC='\033[0m'
 
-echo -e "${BLUE}=======================================${NC}"
-echo -e "${BLUE}     SelfInstall Auto Install tool     ${NC}"
-echo -e "${BLUE}=======================================${NC}"
+echo -e "${BLUE}=== SelfInstall Setup ===${NC}"
 
-# Root kontrolü
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}ERROR: RUN THIS SCRIPT WITH 'sudo ./install.sh'.${NC}"
+  echo -e "${RED}Error: Please run this script as root using 'sudo ./install.sh'.${NC}"
   exit 1
 fi
 
-# 1. Gerekli bağımlılıkların (debootstrap) kontrolü
+# Get the real user details from the host system
+REAL_USER=${SUDO_USER:-$USER}
+REAL_UID=$(id -u "$REAL_USER")
+
+# 1. debootstrap check
 if ! command -v debootstrap &> /dev/null; then
-    echo -e "${BLUE}[1/3] debootstrap not found. Installing...${NC}"
-    if command -v pacman &> /dev/null; then
-        pacman -Sy --noconfirm debootstrap
-    else
-        echo -e "${RED}ERROR: This install script currently supports only Arch-based systems..${NC}"
-        exit 1
-    fi
+    echo -e "${BLUE}[1/2] Installing debootstrap...${NC}"
+    pacman -Sy --noconfirm debootstrap
 else
-    echo -e "${GREEN}[1/3] debootstrap already installed.${NC}"
+    echo -e "${GREEN}[1/2] debootstrap is already installed.${NC}"
 fi
 
-# 2. Debian Kök Klasörünün Hazırlanması
+# 2. Creating Debian Directory and Fetching Base System
 DEBIAN_DIR="/debian-koku"
 if [ ! -d "$DEBIAN_DIR" ]; then
-    echo -e "${BLUE}[2/3]Creating Debian isolated folder and downloading the base image...${NC}"
-    echo -e "${BLUE}(This process may take some time, depending on the internet speed....)${NC}"
+    echo -e "${BLUE}[2/2] Downloading clean Debian base system...${NC}"
     mkdir -p "$DEBIAN_DIR"
     debootstrap stable "$DEBIAN_DIR" http://deb.debian.org/debian/
     
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Debian base created succesfully!${NC}"
-    else
-        echo -e "${RED}ERROR: An error occurred while downloading the Debian base..${NC}"
-        exit 1
-    fi
+    # Configure base environment and tools inside chroot
+    echo -e "${BLUE}Configuring core system tools and user access...${NC}"
+    sudo chroot "$DEBIAN_DIR" env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin apt-get update
+    sudo chroot "$DEBIAN_DIR" env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin apt-get install -y passwd sudo locales
+    
+    # Prevent locale warnings by generating C.UTF-8
+    sudo chroot "$DEBIAN_DIR" env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin sed -i 's/# c.UTF-8 UTF-8/c.UTF-8 UTF-8/' /etc/locale.gen
+    sudo chroot "$DEBIAN_DIR" env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin locale-gen
+    
+    # Mirror host system user to prevent permission issues (e.g., Dolphin root block)
+    sudo chroot "$DEBIAN_DIR" env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /usr/sbin/useradd -m -u "$REAL_UID" "$REAL_USER"
 else
-    echo -e "${GREEN}[2/3] $DEBIAN_DIR The folder already exists. Skipping this step..${NC}"
+    echo -e "${GREEN}[2/2] $DEBIAN_DIR already exists. Skipping bootstrap.${NC}"
 fi
 
-# 3. Ana Scriptin Sisteme Kurulması
+# 3. Deploy selfinstall binary globally
 if [ -f "./selfinstall" ]; then
-    echo -e "${BLUE}[3/3] The selfinstall script is being copied to /usr/local/bin/....${NC}"
     cp ./selfinstall /usr/local/bin/selfinstall
     chmod +x /usr/local/bin/selfinstall
-    echo -e "${GREEN}The script was successfully copied and authorized..${NC}"
+    echo -e "${GREEN}SUCCESS: selfinstall is now available globally!${NC}"
 else
-    echo -e "${RED}ERROR: The 'selfinstall' file was not found in the same folder!${NC}"
+    echo -e "${RED}Error: 'selfinstall' file not found in current directory!${NC}"
     exit 1
 fi
-
-echo -e "${BLUE}==========================================${NC}"
-echo -e "${GREEN}🔥 Installation completed successfully! 🔥${NC}"
-echo -e "${BLUE}You can now use the 'selfinstall' command.${NC}"
-echo -e "${BLUE}Example: selfinstall debian -S mousepad${NC}"
-echo -e "${BLUE}==========================================${NC}"
