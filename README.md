@@ -1,6 +1,3 @@
-# selfinstall
-
-```markdown
 # SelfInstall
 
 SelfInstall is a lightweight containerization utility designed for Arch Linux (and Garuda Linux) environments. It allows users to create an isolated Debian chroot container (`debootstrap`) to install, run, and manage Debian-native software without altering host system dependencies or polluting system libraries.
